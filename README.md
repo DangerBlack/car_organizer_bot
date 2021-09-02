@@ -1,4 +1,4 @@
-# Car Trip Organizer
+# Car Organizer Bot
 ## The easiest way to organize cars for a trip
 
 This bot offer an easy way to organize a trip with friends or colleagues.
