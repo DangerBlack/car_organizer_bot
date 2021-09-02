@@ -35,6 +35,7 @@ docker run -v ~/archive:/archive -d car_organizer:latest
 ```
 
 ## Preview
+![car_trip_output](https://user-images.githubusercontent.com/6942680/131878039-33278302-6d89-408c-aeb1-f0034672b234.gif)
 
 
 ## Usage
