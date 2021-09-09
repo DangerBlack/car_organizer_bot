@@ -1,8 +1,10 @@
 import './dotenv_config';
 
 import * as Database from 'better-sqlite3';
+import {info} from 'console';
 import * as TelegramBot from 'node-telegram-bot-api';
 import {exit} from 'process';
+import {ParseMode} from 'node-telegram-bot-api';
 
 console.log('Connecting the database');
 const db = new Database('archive/database.sqlite', {verbose: console.log});
@@ -12,6 +14,7 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS "trip" (
   "id"	INTEGER PRIMARY KEY AUTOINCREMENT,
   "chat_id" TEXT NOT NULL,
+  "message_id" TEXT,
   "name"	TEXT NOT NULL
 );
 `);
@@ -49,16 +52,16 @@ const token = process.env.TOKEN;
 console.log(`Token ${token.substr(0, 3)}...${token.substr(token.length - 3)}`);
 
 const bot = new TelegramBot(token, {polling: true});
+const parse_mode: ParseMode = 'HTML';
 
-
-bot.onText(/\/trip/, (msg) =>
+bot.onText(/\/trip$/, (msg) =>
 {
     const chat_id = msg.chat.id;
 
     bot.sendMessage(chat_id, 'Please send the command as /trip [name of the trip]');
 });
 
-bot.onText(/\/trip (.+)/, (msg, match) =>
+bot.onText(/\/trip (.+)/, async (msg, match) =>
 {
     const chat_id = msg.chat.id;
 
@@ -86,6 +89,7 @@ bot.onText(/\/trip (.+)/, (msg, match) =>
     }
 
     const opts = {
+        parse_mode,
         reply_markup: {
             inline_keyboard: [
                 [
@@ -98,16 +102,96 @@ bot.onText(/\/trip (.+)/, (msg, match) =>
         }
     };
 
-    bot.sendMessage(chat_id, `📆 ${trip_name}`, opts);
+    const message = await bot.sendMessage(chat_id, `📆 <b>${trip_name}</b>`, opts);
+
+    const update = db.prepare('UPDATE trip SET message_id = @message_id WHERE id = @id');
+    update.run({
+        id: result.lastInsertRowid,
+        message_id: message.message_id,
+    });
+});
+
+bot.onText(/\/seats ([0-9]+)/, async (msg, match) =>
+{
+    const chat_id = msg.chat.id;
+    const user_id = msg.from?.id;
+
+    if(!user_id)
+    {
+        bot.sendMessage(chat_id, `Operation not completed, no user id found.`);
+        return;
+    }
+
+    if(!match)
+        return;
+
+    const max_passenger_number: number = parseInt(match[1].trim(), 10);
+
+    const is_car_existing = db.prepare("SELECT id, trip_id FROM car where user_id = @user_id ORDER BY id DESC LIMIT 1").get({user_id});
+
+    if(!is_car_existing)
+    {
+        bot.sendMessage(chat_id, `Operation not completed, no car found.`);
+        return;
+    }
+
+    const trip_id = is_car_existing.trip_id;
+    try
+    {
+        const update = db.prepare('UPDATE car SET max_passengers = @max_passenger_number WHERE id = @id');
+        update.run({
+            id: is_car_existing.id,
+            max_passenger_number,
+        });
+    }
+    catch(error)
+    {
+        console.error(error);
+        bot.sendMessage(chat_id, `Operation not completed for unexpected reason!`);
+        return;
+    }
+
+    const old_message_reference = db.prepare("SELECT chat_id, message_id FROM trip where trip.id = @trip_id").get({trip_id});
+    const cars = db.prepare("SELECT id, name FROM car where trip_id = @trip_id").all({trip_id});
+
+    const cars_button = cars.map(car => ([{
+        text: `Join ${car.name}`,
+        callback_data: `join_${car.id}`
+    }]));
+
+    const opts = {
+        chat_id: old_message_reference.chat_id,
+        message_id: old_message_reference.message_id,
+        parse_mode,
+        reply_markup: {
+            inline_keyboard: [
+                ...cars_button,
+                [{
+                    text: 'Add 🚙',
+                    callback_data: `add_car_${trip_id}`
+                }]
+            ]
+        }
+    };
+
+    const text = prepare_text_message(trip_id);
+    try
+    {
+        await bot.editMessageText(text, opts);
+    }
+    catch(error)
+    {
+        console.error('Unable to update the chat: ', error.message);
+    }
 });
 
 function prepare_text_message(trip_id: number)
 {
     const {name} = db.prepare("SELECT name FROM trip where trip.id = @trip_id").get({trip_id});
 
-    const passengers = db.prepare("SELECT passenger.name as username, car.name as car_name FROM passenger JOIN car ON car.id = passenger.car_id where car.trip_id = @trip_id ORDER BY car.name").all({trip_id});
+    const passengers = db.prepare("SELECT passenger.name as username, car.name as car_name, car.max_passengers as max_passengers FROM passenger JOIN car ON car.id = passenger.car_id where car.trip_id = @trip_id ORDER BY car.name").all({trip_id});
 
-    let text = `📆 ${name}\n\n`
+    let text = `📆 <b>${name}</b>\n\n`
 
     const car_dictionary = {};
 
@@ -116,16 +200,25 @@ function prepare_text_message(trip_id: number)
         let s = '';
 
         if(!(passenger.car_name in car_dictionary))
-            car_dictionary[passenger.car_name] = [];
+        {
+            car_dictionary[passenger.car_name] = {
+                info: {
+                    max_passengers: passenger.max_passengers
+                },
+                passenger: []
+            };
+        }
 
-        car_dictionary[passenger.car_name].push(passenger.username);
+        car_dictionary[passenger.car_name].passenger.push(passenger.username);
     });
 
     for(const car in car_dictionary)
     {
-        text += `🚙 ${car} [${car_dictionary[car].length}/5]:\n`;
+        const is_car_full = car_dictionary[car].passenger.length >= (car_dictionary[car].info.max_passengers || 5) ? true : false;
 
-        for(const username of car_dictionary[car])
+        text += `${is_car_full ? '🚗' : '🚙'} <b>${car}</b> [${car_dictionary[car].passenger.length}/${car_dictionary[car].info.max_passengers || 5}] ${is_car_full ? '🚫' : ''}:\n`;
+
+        for(const username of car_dictionary[car].passenger)
             text += `- ${username}\n`;
 
         text += '\n'
@@ -179,6 +272,7 @@ function handle_add_car(callback_query: any, chat_id: number, msg: any, trip_id:
     const opts = {
         chat_id: msg.chat.id,
         message_id: msg.message_id,
+        parse_mode,
         reply_markup: {
             inline_keyboard: [
                 ...cars_button,
@@ -206,7 +300,7 @@ function handle_jump_in_car(callback_query: any, chat_id: number, msg: any, car_
             if(is_passenger_existing.car_id == car_id)
                 return;
 
-            const update = db.prepare('UPDATE passenger SET car_id = @car_id WHERE id = @id');;
+            const update = db.prepare('UPDATE passenger SET car_id = @car_id WHERE id = @id');
             update.run({
                 id: is_passenger_existing.id,
                 car_id,
@@ -240,6 +334,7 @@ function handle_jump_in_car(callback_query: any, chat_id: number, msg: any, car_
     const opts = {
         chat_id: msg.chat.id,
         message_id: msg.message_id,
+        parse_mode,
         reply_markup: {
             inline_keyboard: [
                 ...cars_button,
