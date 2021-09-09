@@ -4,7 +4,7 @@ import * as Database from 'better-sqlite3';
 import {info} from 'console';
 import * as TelegramBot from 'node-telegram-bot-api';
 import {exit} from 'process';
-import {ParseMode} from 'node-telegram-bot-api';
+import {ParseMode, SendMessageOptions} from 'node-telegram-bot-api';
 
 console.log('Connecting the database');
 const db = new Database('archive/database.sqlite', {verbose: console.log});
@@ -388,4 +388,20 @@ bot.onText(/\/start/, (msg) =>
 {
     const chatId = msg.chat.id;
     bot.sendMessage(chatId, 'Hello I\'m car organizer bot!');
+});
+
+bot.onText(/\/help/, (msg) =>
+{
+    const chatId = msg.chat.id;
+    bot.sendMessage(chatId, `
+Hello I\'m car organizer bot!
+I'm here to help you organize an easy trip with your friends!
+
+Steps:
+    1. Add @car_organizer_bot to your group of friends
+    2. Write <code>/trip name_of_the_trip</code> in the group
+    3. Click on the Add Car button to make your car available for your friends
+    4. Click on the car of a friends if you want jump in
+    5. You can customize the number of seats by typing <code>/seats 4</code>
+    6. When every member are in a car you are ready to go!`, {parse_mode});
 });
