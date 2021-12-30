@@ -127,7 +127,7 @@ bot.onText(/\/seats ([0-9]+)/, async (msg, match) =>
 
     const max_passenger_number: number = parseInt(match[1].trim(), 10);
 
-    const is_car_existing = db.prepare("SELECT id, trip_id FROM car where user_id = @user_id ORDER BY id DESC LIMIT 1").get({user_id});
+    const is_car_existing = db.prepare("SELECT car.id, car.trip_id FROM car JOIN trip ON car.trip_id = trip.id where car.user_id = @user_id and trip.chat_id = @chat_id ORDER BY car.id DESC LIMIT 1").get({user_id, chat_id});
 
     if(!is_car_existing)
     {
@@ -202,8 +202,14 @@ bot.onText(/\/name ([0-9a-zA-Z]+)/, async (msg, match) =>
     const name: string = match[1].trim();
     try
     {
-        const update = db.prepare('UPDATE passenger SET name = @name WHERE user_id = @user_id');
-        update.run({
+        const update_passenger = db.prepare('UPDATE passenger SET name = @name WHERE user_id = @user_id');
+        update_passenger.run({
+            user_id,
+            name,
+        });
+
+        const update_car = db.prepare('UPDATE car SET name = @name WHERE user_id = @user_id');
+        update_car.run({
             user_id,
             name,
         });
@@ -213,6 +219,44 @@ bot.onText(/\/name ([0-9a-zA-Z]+)/, async (msg, match) =>
         console.error(error);
         bot.sendMessage(chat_id, `Operation not completed for unexpected reason!`);
         return;
+    }
+
+    const old_message_references = db.prepare("SELECT trip.chat_id, trip.message_id, trip.id FROM trip JOIN car ON trip.id = car.trip_id where car.user_id = @user_id").all({user_id});
+
+    for(const old_message_reference of old_message_references)
+    {
+        const trip_id =  old_message_reference.id;
+        const cars = db.prepare("SELECT id, name FROM car where trip_id = @trip_id").all({trip_id});
+
+        const cars_button = cars.map(car => ([{
+            text: `Join ${car.name}`,
+            callback_data: `join_${car.id}`
+        }]));
+
+        const opts = {
+            chat_id: old_message_reference.chat_id,
+            message_id: old_message_reference.message_id,
+            parse_mode,
+            reply_markup: {
+                inline_keyboard: [
+                    ...cars_button,
+                    [{
+                        text: 'Add 🚙',
+                        callback_data: `add_car_${trip_id}`
+                    }]
+                ]
+            }
+        };
+
+        const text = prepare_text_message(trip_id);
+        try
+        {
+            await bot.editMessageText(text, opts);
+        }
+        catch(error)
+        {
+            console.error('Unable to update the chat: ', error.message);
+        }
     }
 
     bot.sendMessage(chat_id, `Ok I've update your name in every trip to ${name}`);
