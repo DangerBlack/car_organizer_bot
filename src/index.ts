@@ -49,7 +49,7 @@ if(!process.env.TOKEN)
 
 const token = process.env.TOKEN;
 
-console.log(`Token ${token.substr(0, 3)}...${token.substr(token.length - 3)}`);
+console.log(`Token ${token.substring(0, 3)}...${token.substring(token.length - 3)}`);
 
 const bot = new TelegramBot(token, {polling: true});
 const parse_mode: ParseMode = 'HTML';
@@ -183,6 +183,39 @@ bot.onText(/\/seats ([0-9]+)/, async (msg, match) =>
     {
         console.error('Unable to update the chat: ', error.message);
     }
+});
+
+bot.onText(/\/name ([0-9a-zA-Z]+)/, async (msg, match) =>
+{
+    const chat_id = msg.chat.id;
+    const user_id = msg.from?.id;
+
+    if(!user_id)
+    {
+        bot.sendMessage(chat_id, `Operation not completed, no user id found.`);
+        return;
+    }
+
+    if(!match)
+        return;
+
+    const name: string = match[1].trim();
+    try
+    {
+        const update = db.prepare('UPDATE passenger SET name = @name WHERE user_id = @user_id');
+        update.run({
+            user_id,
+            name,
+        });
+    }
+    catch(error)
+    {
+        console.error(error);
+        bot.sendMessage(chat_id, `Operation not completed for unexpected reason!`);
+        return;
+    }
+
+    bot.sendMessage(chat_id, `Ok I've update your name in every trip to ${name}`);
 });
 
 function prepare_text_message(trip_id: number)
