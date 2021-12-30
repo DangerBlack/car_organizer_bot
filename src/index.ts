@@ -54,14 +54,14 @@ console.log(`Token ${token.substring(0, 3)}...${token.substring(token.length - 3
 const bot = new TelegramBot(token, {polling: true});
 const parse_mode: ParseMode = 'HTML';
 
-bot.onText(/\/trip$/, (msg) =>
+bot.onText(/\/trip(?:@car_organizer_bot)?$/, (msg) =>
 {
     const chat_id = msg.chat.id;
 
     bot.sendMessage(chat_id, 'Please send the command as /trip [name of the trip]');
 });
 
-bot.onText(/\/trip (.+)/, async (msg, match) =>
+bot.onText(/\/trip(?:@car_organizer_bot)? (.+)/, async (msg, match) =>
 {
     const chat_id = msg.chat.id;
 
@@ -111,7 +111,7 @@ bot.onText(/\/trip (.+)/, async (msg, match) =>
     });
 });
 
-bot.onText(/\/seats ([0-9]+)/, async (msg, match) =>
+bot.onText(/\/seats(?:@car_organizer_bot)? ([0-9]+)/, async (msg, match) =>
 {
     const chat_id = msg.chat.id;
     const user_id = msg.from?.id;
@@ -185,7 +185,7 @@ bot.onText(/\/seats ([0-9]+)/, async (msg, match) =>
     }
 });
 
-bot.onText(/\/name ([0-9a-zA-Z]+)/, async (msg, match) =>
+bot.onText(/\/name(?:@car_organizer_bot)? ([0-9a-zA-Z]+)/, async (msg, match) =>
 {
     const chat_id = msg.chat.id;
     const user_id = msg.from?.id;
@@ -461,13 +461,13 @@ bot.on('callback_query', (callback_query) =>
     }
 });
 
-bot.onText(/\/start/, (msg) =>
+bot.onText(/\/start(?:@car_organizer_bot)?/, (msg) =>
 {
     const chatId = msg.chat.id;
     bot.sendMessage(chatId, 'Hello I\'m car organizer bot!');
 });
 
-bot.onText(/\/help/, (msg) =>
+bot.onText(/\/help(?:@car_organizer_bot)?/, (msg) =>
 {
     const chatId = msg.chat.id;
     bot.sendMessage(chatId, `
