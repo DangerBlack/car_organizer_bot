@@ -183,7 +183,7 @@ async function add_car(_req: TypedRequestBody<any>, res: TypedResponseSend<any>,
     const old_message_reference = db.prepare("SELECT chat_id, message_id FROM trip where trip.id = @trip_id").get({trip_id});
 
     res.send();
-    const result = await client.chat.update({
+    await client.chat.update({
         channel: data.channel.id,
         ts: old_message_reference.message_id,
         text,
@@ -224,9 +224,9 @@ async function join_car(_req: TypedRequestBody<any>, res: TypedResponseSend<any>
 
     const text = prepare_text_message(trip_id);
     const old_message_reference = db.prepare("SELECT chat_id, message_id FROM trip where trip.id = @trip_id").get({trip_id});
+
     res.send();
-    console.log(old_message_reference.message_id)
-    const result = await client.chat.update({
+    await client.chat.update({
         channel: data.channel.id,
         ts: old_message_reference.message_id,
         text,
@@ -253,7 +253,6 @@ async function join_car(_req: TypedRequestBody<any>, res: TypedResponseSend<any>
 
 async function update_car_seats_wrapper(req: TypedRequestBody<{channel_id: string, text: string, response_url: string, user_id: string}>, res: TypedResponseSend<any>)
 {
-    console.log(req.body)
     const channel_id = req.body.channel_id;
     const max_passenger_number = parseInt(req.body.text.trim(), 10);
     const user_id = req.body.user_id;
@@ -271,8 +270,7 @@ async function update_car_seats_wrapper(req: TypedRequestBody<{channel_id: strin
         value: `join_${car.id}`
     }));
 
-    console.log(old_message_reference.message_id)
-    const result = await client.chat.update({
+    await client.chat.update({
         channel: old_message_reference.chat_id,
         ts: old_message_reference.message_id,
         text,
