@@ -98,7 +98,6 @@ export function handle_jump_in_car(car_id: number, user_id: string | number, use
     const {trip_id} = db.prepare("SELECT trip_id FROM car where car.id = @car_id").get({car_id});
     const is_passenger_existing = db.prepare("SELECT passenger.id, passenger.car_id FROM passenger JOIN car ON passenger.car_id = car.id where car.trip_id = @trip_id AND passenger.user_id = @user_id").get({trip_id, user_id});
 
-    console.log(is_passenger_existing);
     if(is_passenger_existing)
     {
         if(is_passenger_existing.car_id == car_id)
@@ -135,6 +134,7 @@ export function handle_jump_in_car(car_id: number, user_id: string | number, use
             throw new Error(`Operation not completed for unexpected reason!`);
         }
     }
+
     const cars = db.prepare("SELECT id, name FROM car where trip_id = @trip_id").all({trip_id});
 
     return cars;
