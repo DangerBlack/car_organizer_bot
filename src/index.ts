@@ -1,43 +1,11 @@
 import './dotenv_config';
+import './web';
 
-import * as Database from 'better-sqlite3';
-import {info} from 'console';
+import {db} from './database';
 import * as TelegramBot from 'node-telegram-bot-api';
 import {exit} from 'process';
 import {ParseMode, SendMessageOptions} from 'node-telegram-bot-api';
-
-console.log('Connecting the database');
-const db = new Database('archive/database.sqlite', {verbose: console.log});
-
-console.log('Creating the tables');
-db.exec(`
-CREATE TABLE IF NOT EXISTS "trip" (
-  "id"	INTEGER PRIMARY KEY AUTOINCREMENT,
-  "chat_id" TEXT NOT NULL,
-  "message_id" TEXT,
-  "name"	TEXT NOT NULL
-);
-`);
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS "car" (
-    "id"	INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    "trip_id"	INTEGER NOT NULL,
-    "user_id"	TEXT NOT NULL,
-    "name"	TEXT NOT NULL,
-    "passengers" INTEGER,
-    "max_passengers" INTEGER
-);
-`);
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS "passenger" (
-    "id"	INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    "car_id"	INTEGER NOT NULL,
-    "user_id"	TEXT NOT NULL,
-    "name"	TEXT NOT NULL
-);
-`);
+import {handle_add_car, handle_jump_in_car, insert_trip, insert_trip_message_id} from './common';
 
 console.log('Configuring the token');
 
@@ -65,50 +33,38 @@ bot.onText(/\/trip(?:@car_organizer_bot)? (.+)/, async (msg, match) =>
 {
     const chat_id = msg.chat.id;
 
-    if(!match)
-        return;
-
-    const trip_name: string = match[1].trim();
-
-    const insert = db.prepare('INSERT INTO trip (chat_id, name) VALUES (@chat_id, @trip_name)');
-
-    let result;
-
     try
     {
-        result = insert.run({
-            chat_id,
-            trip_name,
-        });
+        if(!match)
+            return;
+
+        const trip_name: string = match[1].trim();
+
+        const db_result = insert_trip(chat_id, trip_name);
+
+        const trip_id = db_result.lastInsertRowid;
+        const opts = {
+            parse_mode,
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: 'Add 🚙',
+                            callback_data: `add_car_${trip_id}`
+                        }
+                    ]
+                ]
+            }
+        };
+
+        const message = await bot.sendMessage(chat_id, `📆 <b>${trip_name}</b>`, opts);
+
+        insert_trip_message_id(trip_id.toString(), message.message_id);
     }
     catch(error)
     {
-        console.error(error);
         bot.sendMessage(chat_id, `Operation not completed for unexpected reason!`);
-        return;
     }
-
-    const opts = {
-        parse_mode,
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    {
-                        text: 'Add 🚙',
-                        callback_data: `add_car_${result.lastInsertRowid}`
-                    }
-                ]
-            ]
-        }
-    };
-
-    const message = await bot.sendMessage(chat_id, `📆 <b>${trip_name}</b>`, opts);
-
-    const update = db.prepare('UPDATE trip SET message_id = @message_id WHERE id = @id');
-    update.run({
-        id: result.lastInsertRowid,
-        message_id: message.message_id,
-    });
 });
 
 bot.onText(/\/seats(?:@car_organizer_bot)? ([0-9]+)/, async (msg, match) =>
@@ -274,8 +230,6 @@ function prepare_text_message(trip_id: number)
 
     passengers.map(passenger =>
     {
-        let s = '';
-
         if(!(passenger.car_name in car_dictionary))
         {
             car_dictionary[passenger.car_name] = {
@@ -304,126 +258,77 @@ function prepare_text_message(trip_id: number)
     return text;
 }
 
-function handle_add_car(callback_query: any, chat_id: number, msg: any, trip_id: number, user_id: number, username: string)
+function handle_add_car_wrap(chat_id: number, msg: any, trip_id: number, user_id: number, username: string)
 {
-    const is_trip_existing = db.prepare("SELECT id FROM trip where chat_id = @chat_id AND id = @trip_id").get({chat_id, trip_id});
-
-    if(!is_trip_existing)
-    {
-        bot.sendMessage(chat_id, `Operation not completed, no trip found.`);
-        return;
-    }
-
-    const is_car_existing = db.prepare("SELECT id FROM car where trip_id = @trip_id AND user_id = @user_id").get({trip_id, user_id});
-
-    if(is_car_existing)
-    {
-        bot.sendMessage(chat_id, `Operation not completed, car already added!`);
-        return;
-    }
-
-    const insert = db.prepare('INSERT INTO car (trip_id, user_id, name) VALUES (@trip_id, @user_id, @name)');
-
     try
     {
-        insert.run({
-            trip_id,
-            user_id,
-            name: username
-        });
+        const cars = handle_add_car(chat_id, trip_id, user_id, username);
+
+        const cars_button = cars.map(car => ([{
+            text: `Join ${car.name}`,
+            callback_data: `join_${car.id}`
+        }]));
+
+        const opts = {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id,
+            parse_mode,
+            reply_markup: {
+                inline_keyboard: [
+                    ...cars_button,
+                    [{
+                        text: 'Add 🚙',
+                        callback_data: `add_car_${trip_id}`
+                    }]
+                ]
+            }
+        };
+
+        const text = prepare_text_message(trip_id);
+        bot.editMessageText(text, opts);
     }
     catch(error)
     {
-        console.error(error);
-        bot.sendMessage(chat_id, `Operation not completed for unexpected reason!`);
-        return;
+        bot.sendMessage(chat_id, `${error.message || 'Operation failed for unknown error!'}`);
     }
-
-    const cars = db.prepare("SELECT id, name FROM car where trip_id = @trip_id").all({trip_id});
-
-    const cars_button = cars.map(car => ([{
-        text: `Join ${car.name}`,
-        callback_data: `join_${car.id}`
-    }]));
-
-    const opts = {
-        chat_id: msg.chat.id,
-        message_id: msg.message_id,
-        parse_mode,
-        reply_markup: {
-            inline_keyboard: [
-                ...cars_button,
-                [{
-                    text: 'Add 🚙',
-                    callback_data: `add_car_${trip_id}`
-                }]
-            ]
-        }
-    };
-
-    const text = prepare_text_message(trip_id);
-    bot.editMessageText(text, opts);
 }
 
-function handle_jump_in_car(callback_query: any, chat_id: number, msg: any, car_id: number, user_id: number, username: string)
+function handle_jump_in_car_wrap(chat_id: number, msg: any, car_id: number, user_id: number, username: string)
 {
-    const {trip_id} = db.prepare("SELECT trip_id FROM car where car.id = @car_id").get({car_id});
-    const is_passenger_existing = db.prepare("SELECT passenger.id, passenger.car_id FROM passenger JOIN car ON passenger.car_id = car.id where car.trip_id = @trip_id AND passenger.user_id = @user_id").get({trip_id, user_id});
-
     try
     {
-        if(is_passenger_existing)
-        {
-            if(is_passenger_existing.car_id == car_id)
-                return;
+        const {trip_id} = db.prepare("SELECT trip_id FROM car where car.id = @car_id").get({car_id});
 
-            const update = db.prepare('UPDATE passenger SET car_id = @car_id WHERE id = @id');
-            update.run({
-                id: is_passenger_existing.id,
-                car_id,
-            });
-        }
-        else
-        {
-            const insert = db.prepare('INSERT INTO passenger (car_id, user_id, name) VALUES (@car_id, @user_id, @name)');
-            insert.run({
-                car_id,
-                user_id,
-                name: username
-            });
-        }
+        const cars = handle_jump_in_car(car_id, user_id, username);
+
+        const cars_button = cars.map(car => ([{
+            text: `Join ${car.name}`,
+            callback_data: `join_${car.id}`
+        }]));
+
+        const text = prepare_text_message(trip_id);
+
+        const opts = {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id,
+            parse_mode,
+            reply_markup: {
+                inline_keyboard: [
+                    ...cars_button,
+                    [{
+                        text: 'Add 🚙',
+                        callback_data: `add_car_${trip_id}`
+                    }]
+                ]
+            }
+        };
+
+        bot.editMessageText(text, opts);
     }
     catch(error)
     {
-        console.error(error);
-        bot.sendMessage(chat_id, `Operation not completed for unexpected reason!`);
-        return;
+        bot.sendMessage(chat_id, `${error.message || 'Operation failed for unknown error!'}`);
     }
-
-    const text = prepare_text_message(trip_id);
-
-    const cars = db.prepare("SELECT id, name FROM car where trip_id = @trip_id").all({trip_id});
-    const cars_button = cars.map(car => ([{
-        text: `Join ${car.name}`,
-        callback_data: `join_${car.id}`
-    }]));
-
-    const opts = {
-        chat_id: msg.chat.id,
-        message_id: msg.message_id,
-        parse_mode,
-        reply_markup: {
-            inline_keyboard: [
-                ...cars_button,
-                [{
-                    text: 'Add 🚙',
-                    callback_data: `add_car_${trip_id}`
-                }]
-            ]
-        }
-    };
-
-    bot.editMessageText(text, opts);
 }
 
 bot.on('callback_query', (callback_query) =>
@@ -450,10 +355,10 @@ bot.on('callback_query', (callback_query) =>
         }
 
         if(action.startsWith('add_car_'))
-            handle_add_car(callback_query, chat_id, msg, parseInt(action.split('add_car_')[1], 10), from.id, username)
+            handle_add_car_wrap(chat_id, msg, parseInt(action.split('add_car_')[1], 10), from.id, username)
 
         if(action.startsWith('join_'))
-            handle_jump_in_car(callback_query, chat_id, msg, parseInt(action.split('join_')[1], 10), from.id, username);
+            handle_jump_in_car_wrap(chat_id, msg, parseInt(action.split('join_')[1], 10), from.id, username);
     }
     catch(error)
     {
