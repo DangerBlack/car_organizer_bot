@@ -32,6 +32,11 @@ app.use(bodyParser.json());
 app.use(cors());
 const port = process.env.SLACK_HTTP_PORT || 3000
 
+app.get('/', async (_req: TypedRequestBody<any>, res: TypedResponseSend<any>) =>
+{
+    res.send('Nothing to do here');
+});
+
 app.post('/', async (req: TypedRequestBody<any>, res: TypedResponseSend<any>) =>
 {
     try
