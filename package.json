@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "ts-node src/index.ts",
-    "port_forward": "ngrok http 7171"
+    "port_forward": "ngrok http 3000"
   },
   "author": "DangerBlack",
   "license": "MIT",

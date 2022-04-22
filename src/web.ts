@@ -30,7 +30,7 @@ app.use(bodyParser.urlencoded({
 }));
 app.use(bodyParser.json());
 app.use(cors());
-const port = 7171
+const port = process.env.SLACK_HTTP_PORT || 3000
 
 app.post('/', async (req: TypedRequestBody<any>, res: TypedResponseSend<any>) =>
 {
