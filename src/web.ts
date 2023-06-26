@@ -11,6 +11,7 @@ import {
     insert_trip_message_id,
     prepare_text_message,
     update_car_seats,
+    handle_remove_car,
 } from './common';
 import {db} from './database';
 
@@ -51,6 +52,9 @@ app.post('/', async (req: TypedRequestBody<any>, res: TypedResponseSend<any>) =>
 
             case '/seats':
             return await update_car_seats_wrapper(req, res);
+
+            case '/remove':
+                return await remove_car_wrapper(req, res);
 
             default:
                 return res.send('Command not found');
@@ -187,7 +191,10 @@ async function add_car(_req: TypedRequestBody<any>, res: TypedResponseSend<any>,
     const text = prepare_text_message(trip_id);
     const old_message_reference = db.prepare("SELECT chat_id, message_id FROM trip where trip.id = @trip_id").get({trip_id});
 
-    res.send();
+    res.send({
+        text: `You can remove your car by typing /remove`,
+        response_type: 'ephemeral',
+    });
     await client.chat.update({
         channel: data.channel.id,
         ts: old_message_reference.message_id,
@@ -267,6 +274,69 @@ async function update_car_seats_wrapper(req: TypedRequestBody<{channel_id: strin
     const old_message_reference = db.prepare("SELECT chat_id, message_id FROM trip where trip.id = @trip_id").get({trip_id});
 
     const text = prepare_text_message(trip_id);
+
+    const cars_button: AttachmentAction[] = cars.map(car => ({
+        name: `Join ${car.name}`,
+        text: `Join ${car.name}`,
+        type: 'button',
+        value: `join_${car.id}`
+    }));
+
+    await client.chat.update({
+        channel: old_message_reference.chat_id,
+        ts: old_message_reference.message_id,
+        text,
+        response_type: 'in_channel',
+        replace_original: true,
+        attachments: [{
+                text: 'Add a new 🚙 or jump in',
+                fallback: 'You are unable to add a car',
+                callback_id: `add_car_${trip_id}`,
+                color: '#3AA3E3',
+                actions: [
+                    ...cars_button,
+                    {
+                        name: 'add car',
+                        text: 'Add 🚙',
+                        type: 'button',
+                        value: `add_car_${trip_id}`
+                    },
+                ]
+            }
+        ]
+    });
+
+    res.send({
+        text: `Update your car info!`,
+        response_type: 'ephemeral',
+    });
+}
+
+async function remove_car_wrapper(req: TypedRequestBody<{channel_id: string, text: string, response_url: string, user_id: string}>, res: TypedResponseSend<any>)
+{
+    const channel_id = req.body.channel_id;
+    const user_id = req.body.user_id;
+
+    const is_car_existing = db.prepare("SELECT car.id, car.trip_id FROM car JOIN trip ON car.trip_id = trip.id where car.user_id = @user_id and trip.chat_id = @chat_id ORDER BY car.id DESC LIMIT 1").get({user_id, channel_id});
+
+    if(!is_car_existing)
+    {
+        res.send({
+            text: `Operation not completed, no car found.`,
+            response_type: 'ephemeral',
+        });
+        return;
+    }
+
+    const trip_id = is_car_existing.trip_id;
+
+    handle_remove_car(channel_id, trip_id, user_id);
+
+    const old_message_reference = db.prepare("SELECT chat_id, message_id FROM trip where trip.id = @trip_id").get({trip_id});
+
+    const text = prepare_text_message(trip_id);
+
+    const cars = db.prepare("SELECT id, name FROM car where trip_id = @trip_id").all({trip_id});
 
     const cars_button: AttachmentAction[] = cars.map(car => ({
         name: `Join ${car.name}`,
