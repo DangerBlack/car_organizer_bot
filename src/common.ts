@@ -66,6 +66,38 @@ export function handle_add_car(chat_id: string | number, trip_id: number, user_i
     return cars;
 }
 
+export function handle_remove_car(chat_id: string | number, trip_id: number, user_id: string | number)
+{
+    const is_trip_existing = db.prepare("SELECT id FROM trip where chat_id = @chat_id AND id = @trip_id").get({chat_id, trip_id});
+
+    if(!is_trip_existing)
+        throw new Error(`Operation not completed, no trip found.`);
+
+    const is_car_existing = db.prepare("SELECT id FROM car where trip_id = @trip_id AND user_id = @user_id").get({trip_id, user_id});
+
+    if(!is_car_existing)
+        throw new Error(`Operation not completed, car not yet added!`);
+
+    const delete_car = db.prepare('DELETE FROM car WHERE id = @id');
+    const delete_passenger = db.prepare('DELETE FROM passenger WHERE car_id = @car_id');
+
+    try
+    {
+        delete_car.run({
+            id: is_car_existing.id,
+        });
+
+        delete_passenger.run({
+                car_id: is_car_existing.id,
+        });
+    }
+    catch(error)
+    {
+        console.error(error);
+        throw new Error(`Operation not completed for unexpected reason!`);
+    }
+}
+
 export function update_car_seats(max_passenger_number: number, chat_id: string | number, user_id: string | number): {cars: {id: string, name: string}[], trip_id: number}
 {
     const is_car_existing = db.prepare("SELECT car.id, car.trip_id FROM car JOIN trip ON car.trip_id = trip.id where car.user_id = @user_id and trip.chat_id = @chat_id ORDER BY car.id DESC LIMIT 1").get({user_id, chat_id});
