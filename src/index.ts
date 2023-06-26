@@ -5,7 +5,7 @@ import {db} from './database';
 import * as TelegramBot from 'node-telegram-bot-api';
 import {exit} from 'process';
 import {ParseMode, SendMessageOptions} from 'node-telegram-bot-api';
-import {handle_add_car, handle_jump_in_car, insert_trip, insert_trip_message_id} from './common';
+import {handle_add_car, handle_jump_in_car, insert_trip, insert_trip_message_id, handle_remove_car} from './common';
 
 console.log('Configuring the token');
 
@@ -99,6 +99,73 @@ bot.onText(/\/seats(?:@car_organizer_bot)? ([0-9]+)/, async (msg, match) =>
             id: is_car_existing.id,
             max_passenger_number,
         });
+    }
+    catch(error)
+    {
+        console.error(error);
+        bot.sendMessage(chat_id, `Operation not completed for unexpected reason!`);
+        return;
+    }
+
+    const old_message_reference = db.prepare("SELECT chat_id, message_id FROM trip where trip.id = @trip_id").get({trip_id});
+    const cars = db.prepare("SELECT id, name FROM car where trip_id = @trip_id").all({trip_id});
+
+    const cars_button = cars.map(car => ([{
+        text: `Join ${car.name}`,
+        callback_data: `join_${car.id}`
+    }]));
+
+    const opts = {
+        chat_id: old_message_reference.chat_id,
+        message_id: old_message_reference.message_id,
+        parse_mode,
+        reply_markup: {
+            inline_keyboard: [
+                ...cars_button,
+                [{
+                    text: 'Add 🚙',
+                    callback_data: `add_car_${trip_id}`
+                }]
+            ]
+        }
+    };
+
+    const text = prepare_text_message(trip_id);
+    try
+    {
+        await bot.editMessageText(text, opts);
+    }
+    catch(error)
+    {
+        console.error('Unable to update the chat: ', error.message);
+    }
+});
+
+
+bot.onText(/\/remove(?:@car_organizer_bot)?/, async (msg) =>
+{
+    const chat_id = msg.chat.id;
+    const user_id = msg.from?.id;
+
+    if(!user_id)
+    {
+        bot.sendMessage(chat_id, `Operation not completed, no user id found.`);
+        return;
+    }
+
+    const is_car_existing = db.prepare("SELECT car.id, car.trip_id FROM car JOIN trip ON car.trip_id = trip.id where car.user_id = @user_id and trip.chat_id = @chat_id ORDER BY car.id DESC LIMIT 1").get({user_id, chat_id});
+
+    if(!is_car_existing)
+    {
+        bot.sendMessage(chat_id, `Operation not completed, no car found.`);
+        return;
+    }
+
+    const trip_id = is_car_existing.trip_id;
+
+    try
+    {
+        handle_remove_car(chat_id, trip_id, user_id)
     }
     catch(error)
     {
