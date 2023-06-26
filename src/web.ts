@@ -53,7 +53,7 @@ app.post('/', async (req: TypedRequestBody<any>, res: TypedResponseSend<any>) =>
             case '/seats':
             return await update_car_seats_wrapper(req, res);
 
-            case '/remove':
+            case '/delete':
                 return await remove_car_wrapper(req, res);
 
             default:
@@ -192,7 +192,7 @@ async function add_car(_req: TypedRequestBody<any>, res: TypedResponseSend<any>,
     const old_message_reference = db.prepare("SELECT chat_id, message_id FROM trip where trip.id = @trip_id").get({trip_id});
 
     res.send({
-        text: `You can remove your car by typing /remove`,
+        text: `You can remove your car by typing /delete`,
         response_type: 'ephemeral',
     });
     await client.chat.update({
@@ -317,7 +317,7 @@ async function remove_car_wrapper(req: TypedRequestBody<{channel_id: string, tex
     const channel_id = req.body.channel_id;
     const user_id = req.body.user_id;
 
-    const is_car_existing = db.prepare("SELECT car.id, car.trip_id FROM car JOIN trip ON car.trip_id = trip.id where car.user_id = @user_id and trip.chat_id = @chat_id ORDER BY car.id DESC LIMIT 1").get({user_id, channel_id});
+    const is_car_existing = db.prepare("SELECT car.id, car.trip_id FROM car JOIN trip ON car.trip_id = trip.id where car.user_id = @user_id and trip.chat_id = @chat_id ORDER BY car.id DESC LIMIT 1").get({user_id, chat_id: channel_id});
 
     if(!is_car_existing)
     {
