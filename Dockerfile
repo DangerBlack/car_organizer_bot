@@ -14,9 +14,11 @@ RUN chmod +x car_organizer_bot
 
 FROM alpine:latest
 
-RUN apk add --no-cache sqlite-libs curl
+RUN apk add --no-cache sqlite-libs curl tzdata
 
 COPY --from=builder /app/car_organizer_bot .
+
+ENV GIN_MODE=release
 
 EXPOSE 3000
 
