@@ -33,17 +33,10 @@ go run src/main.go
 
 ### Docker Compose
 
-```yaml
-services:
-  car_organizer:
-    build: .
-    container_name: car_organizer
-    environment:
-      - TOKEN=xxxxxxxxxx:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
-      - DB_PATH=/archive
-    volumes:
-      - ./archive:/archive
-    restart: unless-stopped
+Create a `.env` file with your tokens (see `.env.example`), then:
+
+```
+docker compose up -d
 ```
 
 ### Docker
@@ -71,6 +64,7 @@ SLACK_HTTP_PORT=3000
 4. Set up **Slash Commands**:
    - `/trip` — Create a new trip: `https://your-host/`
    - `/seats` — Set car seats: `https://your-host/`
+   - `/name` — Set your display name: `https://your-host/`
 5. Set up **Interactive Components** → **Request URL**: `https://your-host/webhook`
 
 ### Exposing your local server
