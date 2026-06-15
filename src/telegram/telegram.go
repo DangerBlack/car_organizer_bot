@@ -21,7 +21,6 @@ func (t Telegram) SetupHandlers() {
 	t.Bot.Handle("/help", t.Help)
 	t.Bot.Handle("/trip", t.CreateTrip)
 	t.Bot.Handle("/seats", t.SetSeats)
-	t.Bot.Handle("/remove", t.RemoveCar)
 	t.Bot.Handle("/name", t.SetName)
 
 	t.Bot.Handle(telebot.OnCallback, func(c telebot.Context) error {
@@ -33,6 +32,8 @@ func (t Telegram) SetupHandlers() {
 			return t.CallbackAddCar(c)
 		case strings.HasPrefix(data, "join_"):
 			return t.CallbackJoinCar(c)
+		case strings.HasPrefix(data, "leave_"):
+			return t.CallbackLeave(c)
 		default:
 			return c.Respond(&telebot.CallbackResponse{Text: "unknown action"})
 		}
@@ -52,7 +53,7 @@ func messageID(msg *telebot.Message) string {
 }
 
 func (t Telegram) Start(c telebot.Context) error {
-	return c.Send("Hello I'm car organizer bot!")
+	return t.Help(c)
 }
 
 func (t Telegram) Help(c telebot.Context) error {
@@ -62,10 +63,12 @@ I'm here to help you organize an easy trip with your friends!
 Steps:
     1. Add @car_organizer_bot to your group of friends
     2. Write <code>/trip name_of_the_trip</code> in the group
-    3. Click on the Add Car button to make your car available for your friends
-    4. Click on the car of a friends if you want jump in
-    5. You can customize the number of seats by typing <code>/seats 4</code>
-    6. When every member are in a car you are ready to go!`, &telebot.SendOptions{ParseMode: telebot.ModeHTML})
+    3. Click on <b>Add 🚙</b> to make your car available for your friends
+    4. Click on a friend's car to jump in
+    5. Click <b>Leave trip</b> to remove yourself or your car
+    6. Customize your seats with <code>/seats 4</code>
+    7. Set your display name with <code>/name Your Name</code>
+    8. When everyone is in a car you are ready to go!`, &telebot.SendOptions{ParseMode: telebot.ModeHTML})
 }
 
 func (t Telegram) CreateTrip(c telebot.Context) error {
@@ -118,20 +121,6 @@ func (t Telegram) SetSeats(c telebot.Context) error {
 	if err != nil {
 		log.Printf("failed to update seats: %v", err)
 		return c.Send("Operation not completed, no car found.")
-	}
-
-	return t.updateTripMessage(c, tripID)
-}
-
-func (t Telegram) RemoveCar(c telebot.Context) error {
-	tripID, _, err := t.DB.UserHasCarInChat(chatID(c), userID(c))
-	if err != nil {
-		return c.Send("Operation not completed, no car found.")
-	}
-
-	if err := t.DB.RemoveCar(tripID, userID(c)); err != nil {
-		log.Printf("failed to remove car: %v", err)
-		return c.Send("Operation not completed for unexpected reason!")
 	}
 
 	return t.updateTripMessage(c, tripID)
@@ -202,11 +191,30 @@ func (t Telegram) CallbackJoinCar(c telebot.Context) error {
 	username := DefineUsername(c.Sender())
 	tripID, err := t.DB.AddOrMovePassenger(carID, userID(c), username)
 	if err != nil {
+		if strings.Contains(err.Error(), "already in that car") {
+			return c.Respond(&telebot.CallbackResponse{Text: "You are already in that car!"})
+		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			return c.Respond(&telebot.CallbackResponse{Text: "You are already in that car!"})
 		}
 		log.Printf("failed to add passenger: %v", err)
 		return c.Respond(&telebot.CallbackResponse{Text: "Failed to join car!"})
+	}
+
+	return t.editTripCallback(c, tripID)
+}
+
+func (t Telegram) CallbackLeave(c telebot.Context) error {
+	data := c.Callback().Data
+	tripIDStr := strings.TrimPrefix(data, "leave_")
+	tripID, err := strconv.ParseInt(tripIDStr, 10, 64)
+	if err != nil {
+		return c.Respond(&telebot.CallbackResponse{Text: "Invalid trip"})
+	}
+
+	if err := t.DB.LeaveTrip(tripID, userID(c)); err != nil {
+		log.Printf("failed to leave trip: %v", err)
+		return c.Respond(&telebot.CallbackResponse{Text: "Failed to leave trip"})
 	}
 
 	return t.editTripCallback(c, tripID)
@@ -291,6 +299,9 @@ func buildKeyboard(cars []models.CarButton, tripID int64) *telebot.ReplyMarkup {
 	}
 	keyboard = append(keyboard, []telebot.InlineButton{
 		{Text: "Add 🚙", Data: fmt.Sprintf("add_car_%d", tripID)},
+	})
+	keyboard = append(keyboard, []telebot.InlineButton{
+		{Text: "Leave trip", Data: fmt.Sprintf("leave_%d", tripID)},
 	})
 	return &telebot.ReplyMarkup{InlineKeyboard: keyboard}
 }
