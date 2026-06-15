@@ -20,9 +20,14 @@ import (
 	"github.com/slack-go/slack"
 )
 
+type SlackAPI interface {
+	PostMessage(channel string, options ...slack.MsgOption) (string, string, error)
+	UpdateMessage(channel, timestamp string, options ...slack.MsgOption) (string, string, string, error)
+}
+
 type WebServer struct {
 	DB            *database.Database
-	SlackClient   *slack.Client
+	SlackClient   SlackAPI
 	Port          string
 	SigningSecret string
 }
