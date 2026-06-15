@@ -5,7 +5,6 @@ services:
     environment:
       - TOKEN=${TOKEN}
       - SLACK_TOKEN=${SLACK_TOKEN}
-      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
       - SLACK_HTTP_PORT=${SLACK_HTTP_PORT:-3000}
       - DB_PATH=/archive
     volumes:
