@@ -1,29 +1,38 @@
 package web
 
 import (
+	"bytes"
 	"car_organizer_bot/src/database"
+	"car_organizer_bot/src/models"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/slack-go/slack"
 )
 
 type WebServer struct {
-	DB          *database.Database
-	SlackClient *slack.Client
-	Port        string
+	DB            *database.Database
+	SlackClient   *slack.Client
+	Port          string
+	SigningSecret string
 }
 
-func NewWebServer(db *database.Database, slackToken, port string) *WebServer {
+func NewWebServer(db *database.Database, slackToken, signingSecret, port string) *WebServer {
 	return &WebServer{
-		DB:          db,
-		SlackClient: slack.New(slackToken),
-		Port:        port,
+		DB:            db,
+		SlackClient:   slack.New(slackToken),
+		SigningSecret: signingSecret,
+		Port:          port,
 	}
 }
 
@@ -34,13 +43,65 @@ func (s *WebServer) Start() {
 		c.String(http.StatusOK, "Nothing to do here")
 	})
 
-	router.POST("/", s.HandleSlashCommand)
-	router.POST("/webhook", s.HandleInteractive)
+	router.POST("/", s.verifyRequest, s.HandleSlashCommand)
+	router.POST("/webhook", s.verifyRequest, s.HandleInteractive)
 
 	log.Printf("Slack HTTP server starting on port %s", s.Port)
 	if err := router.Run(":" + s.Port); err != nil {
 		log.Fatalf("failed to start slack HTTP server: %v", err)
 	}
+}
+
+func (s *WebServer) verifyRequest(c *gin.Context) {
+	if s.SigningSecret == "" {
+		c.Next()
+		return
+	}
+
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
+	timestamp := c.GetHeader("X-Slack-Request-Timestamp")
+	signature := c.GetHeader("X-Slack-Signature")
+
+	if timestamp == "" || signature == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing Slack headers"})
+		return
+	}
+
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid timestamp"})
+		return
+	}
+
+	if abs(time.Now().Unix()-ts) > 300 {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "request expired"})
+		return
+	}
+
+	base := fmt.Sprintf("v0:%s:%s", timestamp, string(body))
+	mac := hmac.New(sha256.New, []byte(s.SigningSecret))
+	mac.Write([]byte(base))
+	expected := "v0=" + hex.EncodeToString(mac.Sum(nil))
+
+	if !hmac.Equal([]byte(expected), []byte(signature)) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
+	c.Next()
+}
+
+func abs(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func (s *WebServer) HandleSlashCommand(c *gin.Context) {
@@ -75,13 +136,15 @@ func (s *WebServer) HandleInteractive(c *gin.Context) {
 		return
 	}
 
-	if len(payload.ActionCallback.AttachmentActions) == 0 {
+	var value string
+	if len(payload.ActionCallback.BlockActions) > 0 {
+		value = payload.ActionCallback.BlockActions[0].Value
+	} else if len(payload.ActionCallback.AttachmentActions) > 0 {
+		value = payload.ActionCallback.AttachmentActions[0].Value
+	} else {
 		c.String(http.StatusBadRequest, "no actions")
 		return
 	}
-
-	action := payload.ActionCallback.AttachmentActions[0]
-	value := action.Value
 
 	switch {
 	case strings.HasPrefix(value, "add_car_"):
@@ -93,6 +156,39 @@ func (s *WebServer) HandleInteractive(c *gin.Context) {
 	default:
 		c.String(http.StatusOK, "unknown action")
 	}
+}
+
+func buildTripBlocks(tripID int64, tripText string, cars []models.CarButton) []slack.Block {
+	blocks := []slack.Block{
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject("mrkdwn", tripText, false, false),
+			nil, nil,
+		),
+	}
+
+	var elements []slack.BlockElement
+	for _, car := range cars {
+		elements = append(elements, slack.NewButtonBlockElement(
+			"join",
+			fmt.Sprintf("join_%d", car.ID),
+			slack.NewTextBlockObject("plain_text", fmt.Sprintf("Join %s", car.Name), false, false),
+		))
+	}
+
+	elements = append(elements, slack.NewButtonBlockElement(
+		"add_car",
+		fmt.Sprintf("add_car_%d", tripID),
+		slack.NewTextBlockObject("plain_text", "Add 🚙", false, false),
+	))
+
+	elements = append(elements, slack.NewButtonBlockElement(
+		"leave",
+		fmt.Sprintf("leave_%d", tripID),
+		slack.NewTextBlockObject("plain_text", "Leave trip", false, false),
+	))
+
+	blocks = append(blocks, slack.NewActionBlock("actions", elements...))
+	return blocks
 }
 
 func (s *WebServer) createTrip(c *gin.Context, channelID, tripName string) {
@@ -108,27 +204,13 @@ func (s *WebServer) createTrip(c *gin.Context, channelID, tripName string) {
 		return
 	}
 
-	// Acknowledge first
 	c.String(http.StatusOK, "")
 
-	tripIDStr := fmt.Sprintf("%d", tripID)
+	tripText := fmt.Sprintf("📆 *%s*\n\nAdd a new 🚙 or jump in", tripName)
 	_, timestamp, err := s.SlackClient.PostMessage(
 		channelID,
-		slack.MsgOptionText(fmt.Sprintf("📆 *%s*", tripName), false),
-		slack.MsgOptionAttachments(slack.Attachment{
-			Text:        "Add a new 🚙 or jump in",
-			Fallback:    "You are unable to add a car",
-			CallbackID:  fmt.Sprintf("add_car_%d", tripID),
-			Color:       "#3AA3E3",
-			Actions: []slack.AttachmentAction{
-				{
-					Name:  "add car",
-					Text:  "Add 🚙",
-					Type:  "button",
-					Value: fmt.Sprintf("add_car_%s", tripIDStr),
-				},
-			},
-		}),
+		slack.MsgOptionBlocks(buildTripBlocks(tripID, tripText, nil)...),
+		slack.MsgOptionText(tripText, false),
 	)
 	if err != nil {
 		log.Printf("failed to post slack message: %v", err)
@@ -141,7 +223,13 @@ func (s *WebServer) createTrip(c *gin.Context, channelID, tripName string) {
 }
 
 func (s *WebServer) addCar(payload slack.InteractionCallback, c *gin.Context) {
-	value := payload.ActionCallback.AttachmentActions[0].Value
+	var value string
+	if len(payload.ActionCallback.BlockActions) > 0 {
+		value = payload.ActionCallback.BlockActions[0].Value
+	} else {
+		value = payload.ActionCallback.AttachmentActions[0].Value
+	}
+
 	tripIDStr := strings.TrimPrefix(value, "add_car_")
 	tripID, err := strconv.ParseInt(tripIDStr, 10, 64)
 	if err != nil {
@@ -180,7 +268,6 @@ func (s *WebServer) addCar(payload slack.InteractionCallback, c *gin.Context) {
 		return
 	}
 
-	// Acknowledge the button press
 	c.JSON(http.StatusOK, map[string]string{
 		"text":          "You have added your car! Use the Leave trip button to remove it.",
 		"response_type": "ephemeral",
@@ -190,7 +277,13 @@ func (s *WebServer) addCar(payload slack.InteractionCallback, c *gin.Context) {
 }
 
 func (s *WebServer) joinCar(payload slack.InteractionCallback, c *gin.Context) {
-	value := payload.ActionCallback.AttachmentActions[0].Value
+	var value string
+	if len(payload.ActionCallback.BlockActions) > 0 {
+		value = payload.ActionCallback.BlockActions[0].Value
+	} else {
+		value = payload.ActionCallback.AttachmentActions[0].Value
+	}
+
 	carIDStr := strings.TrimPrefix(value, "join_")
 	carID, err := strconv.ParseInt(carIDStr, 10, 64)
 	if err != nil {
@@ -219,7 +312,6 @@ func (s *WebServer) joinCar(payload slack.InteractionCallback, c *gin.Context) {
 		return
 	}
 
-	// Acknowledge
 	c.String(http.StatusOK, "")
 
 	s.updateTripMessage(channelID, tripID)
@@ -248,7 +340,13 @@ func (s *WebServer) updateSeats(c *gin.Context, channelID, userID, text string) 
 }
 
 func (s *WebServer) leaveTrip(payload slack.InteractionCallback, c *gin.Context) {
-	value := payload.ActionCallback.AttachmentActions[0].Value
+	var value string
+	if len(payload.ActionCallback.BlockActions) > 0 {
+		value = payload.ActionCallback.BlockActions[0].Value
+	} else {
+		value = payload.ActionCallback.AttachmentActions[0].Value
+	}
+
 	tripIDStr := strings.TrimPrefix(value, "leave_")
 	tripID, err := strconv.ParseInt(tripIDStr, 10, 64)
 	if err != nil {
@@ -323,6 +421,7 @@ func (s *WebServer) updateTripMessage(channelID string, tripID int64) {
 		log.Printf("failed to build trip message: %v", err)
 		return
 	}
+	text = htmlToMrkdwn(text)
 
 	cars, err := s.DB.GetCarsByTrip(tripID)
 	if err != nil {
@@ -330,41 +429,26 @@ func (s *WebServer) updateTripMessage(channelID string, tripID int64) {
 		return
 	}
 
-	actions := make([]slack.AttachmentAction, 0, len(cars)+1)
-	for _, car := range cars {
-		actions = append(actions, slack.AttachmentAction{
-			Name:  fmt.Sprintf("Join %s", car.Name),
-			Text:  fmt.Sprintf("Join %s", car.Name),
-			Type:  "button",
-			Value: fmt.Sprintf("join_%d", car.ID),
-		})
-	}
-	actions = append(actions, slack.AttachmentAction{
-		Name:  "add car",
-		Text:  "Add 🚙",
-		Type:  "button",
-		Value: fmt.Sprintf("add_car_%d", tripID),
-	})
-	actions = append(actions, slack.AttachmentAction{
-		Name:  "leave",
-		Text:  "Leave trip",
-		Type:  "button",
-		Value: fmt.Sprintf("leave_%d", tripID),
-	})
+	blocks := buildTripBlocks(tripID, text, cars)
 
 	_, _, _, err = s.SlackClient.UpdateMessage(
 		channelID,
 		*trip.MessageID,
+		slack.MsgOptionBlocks(blocks...),
 		slack.MsgOptionText(text, false),
-		slack.MsgOptionAttachments(slack.Attachment{
-			Text:       "Add a new 🚙 or jump in",
-			Fallback:   "You are unable to add a car",
-			CallbackID: fmt.Sprintf("add_car_%d", tripID),
-			Color:      "#3AA3E3",
-			Actions:    actions,
-		}),
 	)
 	if err != nil {
 		log.Printf("failed to update slack message: %v", err)
 	}
+}
+
+func htmlToMrkdwn(html string) string {
+	result := html
+	result = strings.ReplaceAll(result, "<b>", "*")
+	result = strings.ReplaceAll(result, "</b>", "*")
+	result = strings.ReplaceAll(result, "<i>", "_")
+	result = strings.ReplaceAll(result, "</i>", "_")
+	result = strings.ReplaceAll(result, "<code>", "`")
+	result = strings.ReplaceAll(result, "</code>", "`")
+	return result
 }

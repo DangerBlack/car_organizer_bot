@@ -52,6 +52,7 @@ The bot also supports Slack via slash commands and interactive buttons. Add thes
 
 ```
 SLACK_TOKEN=xoxb-your-bot-token
+SLACK_SIGNING_SECRET=your-signing-secret
 SLACK_HTTP_PORT=3000
 ```
 

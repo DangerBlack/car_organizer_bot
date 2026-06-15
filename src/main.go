@@ -26,6 +26,7 @@ func main() {
 	}
 
 	slackToken := os.Getenv("SLACK_TOKEN")
+	slackSigningSecret := os.Getenv("SLACK_SIGNING_SECRET")
 	slackPort := os.Getenv("SLACK_HTTP_PORT")
 	if slackPort == "" {
 		slackPort = "3000"
@@ -69,7 +70,7 @@ func main() {
 	}()
 
 	if slackToken != "" {
-		ws := web.NewWebServer(db, slackToken, slackPort)
+		ws := web.NewWebServer(db, slackToken, slackSigningSecret, slackPort)
 		go func() {
 			log.Default().Println("slack HTTP server started")
 			ws.Start()
