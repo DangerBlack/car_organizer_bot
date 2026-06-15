@@ -54,8 +54,6 @@ func (s *WebServer) HandleSlashCommand(c *gin.Context) {
 		s.createTrip(c, channelID, text)
 	case "/seats":
 		s.updateSeats(c, channelID, userID, text)
-	case "/delete":
-		s.deleteCar(c, channelID, userID)
 	default:
 		c.String(http.StatusOK, "Command not found")
 	}
@@ -84,10 +82,12 @@ func (s *WebServer) HandleInteractive(c *gin.Context) {
 	value := action.Value
 
 	switch {
-	case strings.HasPrefix(value, "add_car"):
+	case strings.HasPrefix(value, "add_car_"):
 		s.addCar(payload, c)
 	case strings.HasPrefix(value, "join_"):
 		s.joinCar(payload, c)
+	case strings.HasPrefix(value, "leave_"):
+		s.leaveTrip(payload, c)
 	default:
 		c.String(http.StatusOK, "unknown action")
 	}
@@ -245,21 +245,29 @@ func (s *WebServer) updateSeats(c *gin.Context, channelID, userID, text string) 
 	s.updateTripMessage(channelID, tripID)
 }
 
-func (s *WebServer) deleteCar(c *gin.Context, channelID, userID string) {
-	tripID, _, err := s.DB.UserHasCarInChat(channelID, userID)
+func (s *WebServer) leaveTrip(payload slack.InteractionCallback, c *gin.Context) {
+	value := payload.ActionCallback.AttachmentActions[0].Value
+	tripIDStr := strings.TrimPrefix(value, "leave_")
+	tripID, err := strconv.ParseInt(tripIDStr, 10, 64)
 	if err != nil {
-		c.String(http.StatusOK, "Operation not completed, no car found.")
+		c.String(http.StatusOK, "Invalid trip")
 		return
 	}
 
-	if err := s.DB.RemoveCar(tripID, userID); err != nil {
-		log.Printf("failed to remove car: %v", err)
-		c.String(http.StatusOK, "Operation not completed for unexpected reason!")
+	channelID := payload.Channel.ID
+	userID := payload.User.ID
+
+	if err := s.DB.LeaveTrip(tripID, userID); err != nil {
+		log.Printf("failed to leave trip: %v", err)
+		c.JSON(http.StatusOK, map[string]string{
+			"text":          "Failed to leave trip",
+			"response_type": "ephemeral",
+		})
 		return
 	}
 
 	c.JSON(http.StatusOK, map[string]string{
-		"text":          "Your car has been removed!",
+		"text":          "You left the trip!",
 		"response_type": "ephemeral",
 	})
 
@@ -302,6 +310,12 @@ func (s *WebServer) updateTripMessage(channelID string, tripID int64) {
 		Text:  "Add 🚙",
 		Type:  "button",
 		Value: fmt.Sprintf("add_car_%d", tripID),
+	})
+	actions = append(actions, slack.AttachmentAction{
+		Name:  "leave",
+		Text:  "Leave trip",
+		Type:  "button",
+		Value: fmt.Sprintf("leave_%d", tripID),
 	})
 
 	_, _, _, err = s.SlackClient.UpdateMessage(
