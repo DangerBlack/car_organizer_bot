@@ -39,17 +39,16 @@ func (t Telegram) SetupHandlers() {
 	})
 }
 
-func DefineUsername(user *telebot.User) string {
-	if user.Username != "" {
-		return user.Username
-	}
-	if user.FirstName != "" && user.LastName != "" {
-		return fmt.Sprintf("%s.%s", user.FirstName[:1], user.LastName)
-	}
-	if user.FirstName != "" {
-		return user.FirstName
-	}
-	return fmt.Sprintf("ID:%d", user.ID)
+func userID(c telebot.Context) string {
+	return strconv.FormatInt(c.Sender().ID, 10)
+}
+
+func chatID(c telebot.Context) string {
+	return strconv.FormatInt(c.Chat().ID, 10)
+}
+
+func messageID(msg *telebot.Message) string {
+	return strconv.Itoa(msg.ID)
 }
 
 func (t Telegram) Start(c telebot.Context) error {
@@ -70,16 +69,13 @@ Steps:
 }
 
 func (t Telegram) CreateTrip(c telebot.Context) error {
-	chatID := c.Chat().ID
 	args := c.Args()
-
 	if len(args) < 1 {
 		return c.Send("Please send the command as /trip [name of the trip]")
 	}
 
 	tripName := strings.Join(args, " ")
-
-	tripID, err := t.DB.InsertTrip(chatID, tripName)
+	tripID, err := t.DB.InsertTrip(chatID(c), tripName)
 	if err != nil {
 		log.Printf("failed to insert trip: %v", err)
 		return c.Send("Operation not completed for unexpected reason!")
@@ -89,9 +85,7 @@ func (t Telegram) CreateTrip(c telebot.Context) error {
 		ParseMode: telebot.ModeHTML,
 		ReplyMarkup: &telebot.ReplyMarkup{
 			InlineKeyboard: [][]telebot.InlineButton{
-				{
-					{Text: "Add 🚙", Data: fmt.Sprintf("add_car_%d", tripID)},
-				},
+				{{Text: "Add 🚙", Data: fmt.Sprintf("add_car_%d", tripID)}},
 			},
 		},
 	}
@@ -102,7 +96,7 @@ func (t Telegram) CreateTrip(c telebot.Context) error {
 		return c.Send("Operation not completed for unexpected reason!")
 	}
 
-	if err := t.DB.UpdateTripMessageID(tripID, int64(msg.ID)); err != nil {
+	if err := t.DB.UpdateTripMessageID(tripID, messageID(msg)); err != nil {
 		log.Printf("failed to update message id: %v", err)
 	}
 
@@ -110,10 +104,7 @@ func (t Telegram) CreateTrip(c telebot.Context) error {
 }
 
 func (t Telegram) SetSeats(c telebot.Context) error {
-	chatID := c.Chat().ID
-	userID := c.Sender().ID
 	args := c.Args()
-
 	if len(args) < 1 {
 		return c.Send("Usage: /seats [number]")
 	}
@@ -123,28 +114,22 @@ func (t Telegram) SetSeats(c telebot.Context) error {
 		return c.Send("Please provide a valid number")
 	}
 
-	tripID, err := t.DB.UpdateCarSeats(chatID, userID, maxPassengers)
+	tripID, err := t.DB.UpdateCarSeats(chatID(c), userID(c), maxPassengers)
 	if err != nil {
 		log.Printf("failed to update seats: %v", err)
-		if err.Error() == "sql: no rows in result set" {
-			return c.Send("Operation not completed, no car found.")
-		}
-		return c.Send("Operation not completed for unexpected reason!")
+		return c.Send("Operation not completed, no car found.")
 	}
 
 	return t.updateTripMessage(c, tripID)
 }
 
 func (t Telegram) RemoveCar(c telebot.Context) error {
-	chatID := c.Chat().ID
-	userID := c.Sender().ID
-
-	tripID, _, err := t.DB.UserHasCarInChat(chatID, userID)
+	tripID, _, err := t.DB.UserHasCarInChat(chatID(c), userID(c))
 	if err != nil {
 		return c.Send("Operation not completed, no car found.")
 	}
 
-	if err := t.DB.RemoveCar(tripID, userID); err != nil {
+	if err := t.DB.RemoveCar(tripID, userID(c)); err != nil {
 		log.Printf("failed to remove car: %v", err)
 		return c.Send("Operation not completed for unexpected reason!")
 	}
@@ -153,21 +138,18 @@ func (t Telegram) RemoveCar(c telebot.Context) error {
 }
 
 func (t Telegram) SetName(c telebot.Context) error {
-	userID := c.Sender().ID
 	args := c.Args()
-
 	if len(args) < 1 {
 		return c.Send("Usage: /name [your name]")
 	}
 
 	name := strings.Join(args, " ")
-
-	if err := t.DB.UpdateName(userID, name); err != nil {
+	if err := t.DB.UpdateName(userID(c), name); err != nil {
 		log.Printf("failed to update name: %v", err)
 		return c.Send("Operation not completed for unexpected reason!")
 	}
 
-	trips, err := t.DB.GetTripsByUserID(userID)
+	trips, err := t.DB.GetTripsByUserID(userID(c))
 	if err != nil {
 		log.Printf("failed to get user trips: %v", err)
 	} else {
@@ -182,11 +164,7 @@ func (t Telegram) SetName(c telebot.Context) error {
 }
 
 func (t Telegram) CallbackAddCar(c telebot.Context) error {
-	chatID := c.Chat().ID
-	userID := c.Sender().ID
-	username := DefineUsername(c.Sender())
 	data := c.Callback().Data
-
 	tripIDStr := strings.TrimPrefix(data, "add_car_")
 	tripID, err := strconv.ParseInt(tripIDStr, 10, 64)
 	if err != nil {
@@ -197,11 +175,12 @@ func (t Telegram) CallbackAddCar(c telebot.Context) error {
 	if err != nil {
 		return c.Respond(&telebot.CallbackResponse{Text: "Trip not found"})
 	}
-	if trip.ChatID != chatID {
+	if trip.ChatID != chatID(c) {
 		return c.Respond(&telebot.CallbackResponse{Text: "Trip not found in this chat"})
 	}
 
-	if err := t.DB.AddCar(tripID, userID, username); err != nil {
+	username := DefineUsername(c.Sender())
+	if err := t.DB.AddCar(tripID, userID(c), username); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			return c.Respond(&telebot.CallbackResponse{Text: "You already have a car in this trip!"})
 		}
@@ -213,17 +192,15 @@ func (t Telegram) CallbackAddCar(c telebot.Context) error {
 }
 
 func (t Telegram) CallbackJoinCar(c telebot.Context) error {
-	userID := c.Sender().ID
-	username := DefineUsername(c.Sender())
 	data := c.Callback().Data
-
 	carIDStr := strings.TrimPrefix(data, "join_")
 	carID, err := strconv.ParseInt(carIDStr, 10, 64)
 	if err != nil {
 		return c.Respond(&telebot.CallbackResponse{Text: "Invalid car"})
 	}
 
-	tripID, err := t.DB.AddOrMovePassenger(carID, userID, username)
+	username := DefineUsername(c.Sender())
+	tripID, err := t.DB.AddOrMovePassenger(carID, userID(c), username)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			return c.Respond(&telebot.CallbackResponse{Text: "You are already in that car!"})
@@ -235,21 +212,32 @@ func (t Telegram) CallbackJoinCar(c telebot.Context) error {
 	return t.editTripCallback(c, tripID)
 }
 
+func DefineUsername(user *telebot.User) string {
+	if user.Username != "" {
+		return user.Username
+	}
+	if user.FirstName != "" && user.LastName != "" {
+		return fmt.Sprintf("%s.%s", user.FirstName[:1], user.LastName)
+	}
+	if user.FirstName != "" {
+		return user.FirstName
+	}
+	return fmt.Sprintf("ID:%d", user.ID)
+}
+
 func (t Telegram) updateTripMessage(c telebot.Context, tripID int64) error {
 	trip, err := t.DB.SelectTripByID(tripID)
 	if err != nil {
 		log.Printf("failed to get trip: %v", err)
 		return c.Send("Operation not completed for unexpected reason!")
 	}
-
 	if trip.MessageID == nil {
 		return c.Send("Operation not completed, no message found.")
 	}
-
 	return t.editTripMessage(trip.ChatID, *trip.MessageID, tripID)
 }
 
-func (t Telegram) editTripMessage(chatID int64, messageID int64, tripID int64) error {
+func (t Telegram) editTripMessage(chatID, messageID string, tripID int64) error {
 	text, err := t.DB.BuildTripMessage(tripID)
 	if err != nil {
 		return err
@@ -260,17 +248,18 @@ func (t Telegram) editTripMessage(chatID int64, messageID int64, tripID int64) e
 		return err
 	}
 
-	keyboard := buildKeyboard(cars, tripID)
+	chatID64, _ := strconv.ParseInt(chatID, 10, 64)
+	msgID, _ := strconv.Atoi(messageID)
 
 	_, err = t.Bot.Edit(
 		&telebot.Message{
-			Chat: &telebot.Chat{ID: chatID},
-			ID:   int(messageID),
+			Chat: &telebot.Chat{ID: chatID64},
+			ID:   msgID,
 		},
 		text,
 		&telebot.SendOptions{
 			ParseMode:   telebot.ModeHTML,
-			ReplyMarkup: keyboard,
+			ReplyMarkup: buildKeyboard(cars, tripID),
 		},
 	)
 	return err
@@ -287,26 +276,21 @@ func (t Telegram) editTripCallback(c telebot.Context, tripID int64) error {
 		return c.Respond(&telebot.CallbackResponse{Text: "Failed to get cars"})
 	}
 
-	keyboard := buildKeyboard(cars, tripID)
-
 	return c.Edit(text, &telebot.SendOptions{
 		ParseMode:   telebot.ModeHTML,
-		ReplyMarkup: keyboard,
+		ReplyMarkup: buildKeyboard(cars, tripID),
 	})
 }
 
 func buildKeyboard(cars []models.CarButton, tripID int64) *telebot.ReplyMarkup {
 	var keyboard [][]telebot.InlineButton
-
 	for _, car := range cars {
 		keyboard = append(keyboard, []telebot.InlineButton{
 			{Text: fmt.Sprintf("Join %s", car.Name), Data: fmt.Sprintf("join_%d", car.ID)},
 		})
 	}
-
 	keyboard = append(keyboard, []telebot.InlineButton{
 		{Text: "Add 🚙", Data: fmt.Sprintf("add_car_%d", tripID)},
 	})
-
 	return &telebot.ReplyMarkup{InlineKeyboard: keyboard}
 }
