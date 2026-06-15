@@ -86,7 +86,7 @@ Then use the ngrok URL as the Request URL in Slack app settings.
 ### Requirements
 
 - Go 1.24+
-- Telegram bot token for Telegram features (optional — Slack-only works without `TOKEN`)
+- Telegram bot token (required — the bot always starts Telegram; set `TOKEN` in `.env`)
 
 ## Preview
 ![car_trip_output](https://user-images.githubusercontent.com/6942680/131878039-33278302-6d89-408c-aeb1-f0034672b234.gif)

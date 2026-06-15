@@ -180,7 +180,7 @@ func (s *WebServer) addCar(payload slack.InteractionCallback, c *gin.Context) {
 
 	// Acknowledge the button press
 	c.JSON(http.StatusOK, map[string]string{
-		"text":          "You have added your car! Remove it with /delete",
+		"text":          "You have added your car! Use the Leave trip button to remove it.",
 		"response_type": "ephemeral",
 	})
 
