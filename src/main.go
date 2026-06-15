@@ -3,6 +3,7 @@ package main
 import (
 	"car_organizer_bot/src/database"
 	"car_organizer_bot/src/telegram"
+	"car_organizer_bot/src/web"
 	"context"
 	"log"
 	"os"
@@ -22,6 +23,12 @@ func main() {
 	token := os.Getenv("TOKEN")
 	if token == "" {
 		log.Fatal("the TOKEN is not set in .env file")
+	}
+
+	slackToken := os.Getenv("SLACK_TOKEN")
+	slackPort := os.Getenv("SLACK_HTTP_PORT")
+	if slackPort == "" {
+		slackPort = "3000"
 	}
 
 	dbPath := os.Getenv("DB_PATH")
@@ -60,6 +67,16 @@ func main() {
 		log.Default().Println("bot started")
 		bot.Start()
 	}()
+
+	if slackToken != "" {
+		ws := web.NewWebServer(db, slackToken, slackPort)
+		go func() {
+			log.Default().Println("slack HTTP server started")
+			ws.Start()
+		}()
+	} else {
+		log.Default().Println("SLACK_TOKEN not set — Slack integration disabled")
+	}
 
 	<-signalChan
 	log.Default().Println("shutdown signal received.")
