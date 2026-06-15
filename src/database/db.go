@@ -2,9 +2,11 @@ package database
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -145,14 +147,17 @@ func (d *Database) AddOrMovePassenger(carID int64, userID, name string) (int64, 
 		return 0, err
 	}
 
-	var existingID int64
+	var existingID, existingCarID int64
 	err = tx.QueryRow(`
-		SELECT p.id FROM passengers p
+		SELECT p.id, p.car_id FROM passengers p
 		JOIN cars c ON p.car_id = c.id
 		WHERE c.trip_id = ? AND p.user_id = ?
-	`, tripID, userID).Scan(&existingID)
+	`, tripID, userID).Scan(&existingID, &existingCarID)
 
 	if err == nil {
+		if existingCarID == carID {
+			return 0, fmt.Errorf("already in that car")
+		}
 		if _, err := tx.Exec("UPDATE passengers SET car_id = ?, name = ? WHERE id = ?", carID, name, existingID); err != nil {
 			return 0, err
 		}
@@ -170,6 +175,20 @@ func (d *Database) AddOrMovePassenger(carID int64, userID, name string) (int64, 
 	}
 
 	return tripID, nil
+}
+
+func (d *Database) LeaveTrip(tripID int64, userID string) error {
+	_, err := d.getCarID(tripID, userID)
+	if err == nil {
+		return d.RemoveCar(tripID, userID)
+	}
+	return d.RemovePassenger(tripID, userID)
+}
+
+func (d *Database) getCarID(tripID int64, userID string) (int64, error) {
+	var id int64
+	err := d.db.QueryRow("SELECT id FROM cars WHERE trip_id = ? AND user_id = ?", tripID, userID).Scan(&id)
+	return id, err
 }
 
 func (d *Database) RemovePassenger(tripID int64, userID string) error {
@@ -200,18 +219,6 @@ func (d *Database) UpdateName(userID, name string) error {
 	return tx.Commit()
 }
 
-func (d *Database) UserHasCarInChat(chatID, userID string) (tripID int64, carID int64, err error) {
-	row := d.db.QueryRow(`
-		SELECT car.id, car.trip_id FROM cars
-		JOIN trips ON car.trip_id = trips.id
-		WHERE car.user_id = ? AND trips.chat_id = ?
-		ORDER BY car.id DESC LIMIT 1
-	`, userID, chatID)
-
-	err = row.Scan(&carID, &tripID)
-	return
-}
-
 func (d *Database) GetCarsByTrip(tripID int64) ([]models.CarButton, error) {
 	rows, err := d.db.Query("SELECT id, name FROM cars WHERE trip_id = ?", tripID)
 	if err != nil {
@@ -236,51 +243,57 @@ func (d *Database) BuildTripMessage(tripID int64) (string, error) {
 		return "", err
 	}
 
-	rows, err := d.db.Query(`
-		SELECT passenger.name AS username, cars.name AS car_name, cars.max_passengers
-		FROM passengers
-		JOIN cars ON cars.id = passengers.car_id
-		WHERE cars.trip_id = ?
-		ORDER BY cars.name
-	`, tripID)
+	carRows, err := d.db.Query("SELECT id, name, max_passengers FROM cars WHERE trip_id = ? ORDER BY name", tripID)
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer carRows.Close()
 
 	type carInfo struct {
 		maxPassengers int64
 		passengers    []string
 	}
+	var carOrder []struct {
+		name string
+		id   int64
+	}
 	carMap := make(map[string]*carInfo)
-	var carOrder []string
 
-	for rows.Next() {
-		var username, carName string
-		var maxPassengers sql.NullInt64
-		if err := rows.Scan(&username, &carName, &maxPassengers); err != nil {
+	for carRows.Next() {
+		var id int64
+		var name string
+		var maxPassengers int64
+		if err := carRows.Scan(&id, &name, &maxPassengers); err != nil {
 			return "", err
 		}
+		carMap[name] = &carInfo{maxPassengers: maxPassengers}
+		carOrder = append(carOrder, struct {
+			name string
+			id   int64
+		}{name, id})
+	}
+	carRows.Close()
 
-		if _, exists := carMap[carName]; !exists {
-			mp := int64(5)
-			if maxPassengers.Valid {
-				mp = maxPassengers.Int64
-			}
-			carMap[carName] = &carInfo{maxPassengers: mp}
-			carOrder = append(carOrder, carName)
+	for _, nc := range carOrder {
+		pRows, err := d.db.Query("SELECT name FROM passengers WHERE car_id = ?", nc.id)
+		if err != nil {
+			return "", err
 		}
-		carMap[carName].passengers = append(carMap[carName].passengers, username)
+		for pRows.Next() {
+			var username string
+			if err := pRows.Scan(&username); err != nil {
+				pRows.Close()
+				return "", err
+			}
+			carMap[nc.name].passengers = append(carMap[nc.name].passengers, username)
+		}
+		pRows.Close()
 	}
 
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
+	text := "📆 <b>" + trip.Name + "</b>\n\n"
 
-	text := "📆 *" + trip.Name + "*\n\n"
-
-	for _, carName := range carOrder {
-		info := carMap[carName]
+	for _, nc := range carOrder {
+		info := carMap[nc.name]
 		isFull := len(info.passengers) >= int(info.maxPassengers)
 		icon := "🚙"
 		fullSuffix := ""
@@ -289,12 +302,14 @@ func (d *Database) BuildTripMessage(tripID int64) (string, error) {
 			fullSuffix = " 🚫"
 		}
 
-		text += icon + " *" + carName + "* [" + strconv.Itoa(len(info.passengers)) + "/" + strconv.Itoa(int(info.maxPassengers)) + "]" + fullSuffix + ":\n"
+		text += icon + " <b>" + nc.name + "</b> [" + strconv.Itoa(len(info.passengers)) + "/" + strconv.Itoa(int(info.maxPassengers)) + "]" + fullSuffix + ":\n"
 		for _, p := range info.passengers {
 			text += "- " + p + "\n"
 		}
 		text += "\n"
 	}
+
+	text += "\n<i>🔄 " + time.Now().Format("15:04:05") + "</i>"
 
 	return text, nil
 }
