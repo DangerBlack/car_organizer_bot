@@ -54,6 +54,8 @@ func (s *WebServer) HandleSlashCommand(c *gin.Context) {
 		s.createTrip(c, channelID, text)
 	case "/seats":
 		s.updateSeats(c, channelID, userID, text)
+	case "/name":
+		s.handleName(c, userID, text)
 	default:
 		c.String(http.StatusOK, "Command not found")
 	}
@@ -272,6 +274,38 @@ func (s *WebServer) leaveTrip(payload slack.InteractionCallback, c *gin.Context)
 	})
 
 	s.updateTripMessage(channelID, tripID)
+}
+
+func (s *WebServer) handleName(c *gin.Context, userID, text string) {
+	if text == "" {
+		c.String(http.StatusOK, "Usage: /name [your display name]")
+		return
+	}
+
+	if err := s.DB.UpdateName(userID, text); err != nil {
+		log.Printf("failed to update name: %v", err)
+		c.JSON(http.StatusOK, map[string]string{
+			"text":          "Failed to update name",
+			"response_type": "ephemeral",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, map[string]string{
+		"text":          fmt.Sprintf("Display name updated to %s", text),
+		"response_type": "ephemeral",
+	})
+
+	trips, err := s.DB.GetTripsByUserID(userID)
+	if err != nil {
+		log.Printf("failed to get user trips: %v", err)
+		return
+	}
+	for _, trip := range trips {
+		if trip.MessageID != nil {
+			s.updateTripMessage(trip.ChatID, trip.ID)
+		}
+	}
 }
 
 func (s *WebServer) updateTripMessage(channelID string, tripID int64) {
