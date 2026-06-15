@@ -48,7 +48,7 @@ docker run --env-file .env -v ./archive:/archive car_organizer
 
 ## Slack Bot
 
-The bot also supports Slack via slash commands and interactive buttons. Add these env vars to your `.env`:
+The bot also supports Slack via slash commands and interactive buttons. Add these env vars to your `.env` (omit `SLACK_TOKEN` to disable Slack):
 
 ```
 SLACK_TOKEN=xoxb-your-bot-token
