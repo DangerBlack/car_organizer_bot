@@ -18,6 +18,6 @@ RUN apk add --no-cache sqlite-libs curl
 
 COPY --from=builder /app/car_organizer_bot .
 
-EXPOSE 8080
+EXPOSE 3000
 
 CMD ["./car_organizer_bot"]
