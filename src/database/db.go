@@ -117,10 +117,10 @@ func (d *Database) RemoveCar(tripID int64, userID string) error {
 
 func (d *Database) UpdateCarSeats(chatID, userID string, maxPassengers int64) (int64, error) {
 	row := d.db.QueryRow(`
-		SELECT car.id, car.trip_id FROM cars
-		JOIN trips ON car.trip_id = trips.id
-		WHERE car.user_id = ? AND trips.chat_id = ?
-		ORDER BY car.id DESC LIMIT 1
+		SELECT cars.id, cars.trip_id FROM cars
+		JOIN trips ON cars.trip_id = trips.id
+		WHERE cars.user_id = ? AND trips.chat_id = ?
+		ORDER BY cars.id DESC LIMIT 1
 	`, userID, chatID)
 
 	var carID, tripID int64
