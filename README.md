@@ -1,9 +1,18 @@
 # Car Organizer Bot
 ## The easiest way to organize cars for a trip
 
-This bot offer an easy way to organize a trip with friends or colleagues.
+This bot offers an easy way to organize a trip with friends or colleagues.
 Create a new trip and add some available cars and ready to go!
 
+
+## Features
+
+- **Trip Management**: Create trips with `/trip [name]`
+- **Add Car**: Click "Add 🚙" to offer your car
+- **Join Car**: Click "Join [name]" to jump into a friend's car
+- **Seats**: Customize your car seats with `/seats [number]`
+- **Remove Car**: Remove your car with `/remove`
+- **Custom Name**: Set your display name with `/name [name]`
 
 ## Telegram Bot
 
@@ -14,24 +23,36 @@ With the Token of the bot.
 
 ```
 TOKEN=xxxxxxxxxx:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
-NTBA_FIX_319=1
+DB_PATH=./archive
 ```
 
-### Start node
-To start the bot just write
+### Run locally
 
 ```
 mkdir archive
-npm i
-npm run start
+go run src/main.go
 ```
 
-### Docker container
-To start the docker container
+### Docker Compose
+
+```yaml
+services:
+  car_organizer:
+    build: .
+    container_name: car_organizer
+    environment:
+      - TOKEN=xxxxxxxxxx:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
+      - DB_PATH=/archive
+    volumes:
+      - ./archive:/archive
+    restart: unless-stopped
+```
+
+### Docker
 
 ```
 docker build -t car_organizer .
-docker run -v ~/archive:/archive -d car_organizer:latest
+docker run --env-file .env -v ./archive:/archive car_organizer
 ```
 
 ## Preview
@@ -42,6 +63,6 @@ docker run -v ~/archive:/archive -d car_organizer:latest
 
 `/trip name of the trip`
 
-Click on the buttont 'Add`.
+Click on the button 'Add'.
 
 Select the car you want to join.

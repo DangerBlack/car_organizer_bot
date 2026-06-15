@@ -1,0 +1,360 @@
+package database
+
+import (
+	"database/sql"
+	"log"
+	"path/filepath"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"car_organizer_bot/src/models"
+)
+
+type Database struct {
+	db *sql.DB
+}
+
+func NewDatabase(path string) *Database {
+	db, err := sql.Open("sqlite3", filepath.Join(path, "database.sqlite?_journal_mode=WAL&_foreign_keys=on"))
+	if err != nil {
+		log.Fatalf("failed to open database: %v", err)
+	}
+
+	return &Database{db}
+}
+
+func (d *Database) Close() {
+	d.db.Close()
+}
+
+func (d *Database) CreateTables() {
+	queries := []string{
+		`CREATE TABLE IF NOT EXISTS trips (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			message_id INTEGER,
+			name TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS cars (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			trip_id INTEGER NOT NULL,
+			user_id INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			max_passengers INTEGER DEFAULT 5,
+			FOREIGN KEY(trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+			UNIQUE(trip_id, user_id) ON CONFLICT FAIL
+		)`,
+		`CREATE TABLE IF NOT EXISTS passengers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			car_id INTEGER NOT NULL,
+			user_id INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			FOREIGN KEY(car_id) REFERENCES cars(id) ON DELETE CASCADE,
+			UNIQUE(car_id, user_id) ON CONFLICT FAIL
+		)`,
+	}
+
+	for _, q := range queries {
+		if _, err := d.db.Exec(q); err != nil {
+			log.Fatalf("failed to create table: %v", err)
+		}
+	}
+}
+
+// InsertTrip creates a new trip and returns its ID.
+func (d *Database) InsertTrip(chatID int64, name string) (int64, error) {
+	result, err := d.db.Exec("INSERT INTO trips (chat_id, name) VALUES (?, ?)", chatID, name)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+// UpdateTripMessageID stores the Telegram message ID for a trip.
+func (d *Database) UpdateTripMessageID(tripID int64, messageID int64) error {
+	_, err := d.db.Exec("UPDATE trips SET message_id = ? WHERE id = ?", messageID, tripID)
+	return err
+}
+
+// SelectTripByID returns a single trip.
+func (d *Database) SelectTripByID(tripID int64) (*models.Trip, error) {
+	row := d.db.QueryRow("SELECT id, chat_id, message_id, name FROM trips WHERE id = ?", tripID)
+	t := &models.Trip{}
+	if err := row.Scan(&t.ID, &t.ChatID, &t.MessageID, &t.Name); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// AddCar inserts a car for a user in a trip. Returns ErrCarAlreadyExists if the user already has a car.
+func (d *Database) AddCar(tripID, userID int64, name string) error {
+	_, err := d.db.Exec(
+		"INSERT INTO cars (trip_id, user_id, name) VALUES (?, ?, ?)",
+		tripID, userID, name,
+	)
+	return err
+}
+
+// RemoveCar deletes the user's car and its passengers from a trip.
+func (d *Database) RemoveCar(tripID, userID int64) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	carID, err := d.getCarIDTx(tx, tripID, userID)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec("DELETE FROM passengers WHERE car_id = ?", carID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM cars WHERE id = ?", carID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// UpdateCarSeats sets the max_passengers for the user's car in a chat.
+func (d *Database) UpdateCarSeats(chatID, userID int64, maxPassengers int64) (int64, error) {
+	row := d.db.QueryRow(`
+		SELECT car.id, car.trip_id FROM cars
+		JOIN trips ON car.trip_id = trips.id
+		WHERE car.user_id = ? AND trips.chat_id = ?
+		ORDER BY car.id DESC LIMIT 1
+	`, userID, chatID)
+
+	var carID, tripID int64
+	if err := row.Scan(&carID, &tripID); err != nil {
+		return 0, err
+	}
+
+	if _, err := d.db.Exec("UPDATE cars SET max_passengers = ? WHERE id = ?", maxPassengers, carID); err != nil {
+		return 0, err
+	}
+
+	return tripID, nil
+}
+
+// AddOrMovePassenger adds a passenger to a car, or moves them from another car in the same trip.
+func (d *Database) AddOrMovePassenger(carID, userID int64, name string) (int64, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var tripID int64
+	if err := tx.QueryRow("SELECT trip_id FROM cars WHERE id = ?", carID).Scan(&tripID); err != nil {
+		return 0, err
+	}
+
+	var existingID int64
+	err = tx.QueryRow(`
+		SELECT p.id FROM passengers p
+		JOIN cars c ON p.car_id = c.id
+		WHERE c.trip_id = ? AND p.user_id = ?
+	`, tripID, userID).Scan(&existingID)
+
+	if err == nil {
+		if _, err := tx.Exec("UPDATE passengers SET car_id = ?, name = ? WHERE id = ?", carID, name, existingID); err != nil {
+			return 0, err
+		}
+	} else {
+		if _, err := tx.Exec(
+			"INSERT INTO passengers (car_id, user_id, name) VALUES (?, ?, ?)",
+			carID, userID, name,
+		); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
+	return tripID, nil
+}
+
+// RemovePassenger removes a user from any car in a trip.
+func (d *Database) RemovePassenger(tripID, userID int64) error {
+	_, err := d.db.Exec(`
+		DELETE FROM passengers WHERE rowid IN (
+			SELECT p.rowid FROM passengers p
+			JOIN cars c ON p.car_id = c.id
+			WHERE c.trip_id = ? AND p.user_id = ?
+		)
+	`, tripID, userID)
+	return err
+}
+
+// UpdateName sets the name for the user's car and passenger entry across all their trips.
+func (d *Database) UpdateName(userID int64, name string) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("UPDATE cars SET name = ? WHERE user_id = ?", name, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("UPDATE passengers SET name = ? WHERE user_id = ?", name, userID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// UserHasCarInChat checks if the user has a car in any trip within the given chat.
+// Returns the trip_id and car_id if found.
+func (d *Database) UserHasCarInChat(chatID, userID int64) (tripID, carID int64, err error) {
+	row := d.db.QueryRow(`
+		SELECT car.id, car.trip_id FROM cars
+		JOIN trips ON car.trip_id = trips.id
+		WHERE car.user_id = ? AND trips.chat_id = ?
+		ORDER BY car.id DESC LIMIT 1
+	`, userID, chatID)
+
+	err = row.Scan(&carID, &tripID)
+	return
+}
+
+// GetCarsByTrip returns all cars in a trip.
+func (d *Database) GetCarsByTrip(tripID int64) ([]models.CarButton, error) {
+	rows, err := d.db.Query("SELECT id, name FROM cars WHERE trip_id = ?", tripID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cars []models.CarButton
+	for rows.Next() {
+		var c models.CarButton
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			return nil, err
+		}
+		cars = append(cars, c)
+	}
+	return cars, rows.Err()
+}
+
+// BuildTripMessage builds the formatted trip overview text.
+func (d *Database) BuildTripMessage(tripID int64) (string, error) {
+	trip, err := d.SelectTripByID(tripID)
+	if err != nil {
+		return "", err
+	}
+
+	rows, err := d.db.Query(`
+		SELECT passenger.name AS username, cars.name AS car_name, cars.max_passengers
+		FROM passengers
+		JOIN cars ON cars.id = passengers.car_id
+		WHERE cars.trip_id = ?
+		ORDER BY cars.name
+	`, tripID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	type carInfo struct {
+		maxPassengers int64
+		passengers    []string
+	}
+	carMap := make(map[string]*carInfo)
+	var carOrder []string
+
+	for rows.Next() {
+		var username, carName string
+		var maxPassengers sql.NullInt64
+		if err := rows.Scan(&username, &carName, &maxPassengers); err != nil {
+			return "", err
+		}
+
+		if _, exists := carMap[carName]; !exists {
+			mp := int64(5)
+			if maxPassengers.Valid {
+				mp = maxPassengers.Int64
+			}
+			carMap[carName] = &carInfo{maxPassengers: mp}
+			carOrder = append(carOrder, carName)
+		}
+		carMap[carName].passengers = append(carMap[carName].passengers, username)
+	}
+
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+
+	text := "📆 <b>" + trip.Name + "</b>\n\n"
+
+	for _, carName := range carOrder {
+		info := carMap[carName]
+		isFull := len(info.passengers) >= int(info.maxPassengers)
+		icon := "🚙"
+		fullSuffix := ""
+		if isFull {
+			icon = "🚗"
+			fullSuffix = " 🚫"
+		}
+
+		text += icon + " <b>" + carName + "</b> [" + itoa(len(info.passengers)) + "/" + itoa(int(info.maxPassengers)) + "]" + fullSuffix + ":\n"
+		for _, p := range info.passengers {
+			text += "- " + p + "\n"
+		}
+		text += "\n"
+	}
+
+	return text, nil
+}
+
+// GetTripsByUserID returns all trips where the user has a car.
+func (d *Database) GetTripsByUserID(userID int64) ([]models.Trip, error) {
+	rows, err := d.db.Query(`
+		SELECT DISTINCT trips.id, trips.chat_id, trips.message_id, trips.name
+		FROM trips
+		JOIN cars ON cars.trip_id = trips.id
+		WHERE cars.user_id = ?
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var trips []models.Trip
+	for rows.Next() {
+		var t models.Trip
+		if err := rows.Scan(&t.ID, &t.ChatID, &t.MessageID, &t.Name); err != nil {
+			return nil, err
+		}
+		trips = append(trips, t)
+	}
+	return trips, rows.Err()
+}
+
+// --- helpers ---
+
+func (d *Database) getCarIDTx(tx *sql.Tx, tripID, userID int64) (int64, error) {
+	var id int64
+	err := tx.QueryRow(
+		"SELECT id FROM cars WHERE trip_id = ? AND user_id = ?",
+		tripID, userID,
+	).Scan(&id)
+	return id, err
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	r := ""
+	for n > 0 {
+		r = string(rune('0'+n%10)) + r
+		n /= 10
+	}
+	return r
+}
